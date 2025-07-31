@@ -29,19 +29,25 @@ class UnifiedkappaManager:
         self,
         phonon,
         mesh=25.0,
+        shengbte_dir=None,
         n_histogram_bins=50,
         save_histogram=False,
     ):
         """
         Args:
             phonon (phonopy.Phonopy)
-            mesh (float | 1x3 array[int]): q-point mesh density
-            temperatures (array[float]) in Kelvin
-            n_histogram_bins (int)
-            save_histogram (bool)
+            mesh (float | np.array([3,], dtype=int)): q-point mesh or mesh density
+            shengbte_dir (str | Path): directory for ShengBTE outputs
+            n_histogram_bins (int): if save_histogram is True, the number of
+                bins for diagonal and off diagonal components of unifiedkappa
+            save_histogram (bool): if True, write files of binned diagonal and
+                off diagonal components of unifiedkappa
         """
         self.phonon = phonon
-        self.mesh = mesh
+        self.mesh = (
+            np.asarray(mesh, dtype=int) if isinstance(mesh, np.ndarray) else mesh
+        )
+        self.shengbte_dir = shengbte_dir
         self.n_histogram_bins = n_histogram_bins
         self.save_histogram = save_histogram
 
@@ -72,7 +78,8 @@ class UnifiedkappaManager:
     def get_maximum_scattering_rates(freqs, tau_factor):
         """
         Args:
-            freqs (np.array[nqpt, nband])
+            freqs (np.array[nqpt, nband]): frequencies of each phonon mode in
+                units of 2*pi*THz
             tau_factor (float)
                 Note: tau_factor=2 corresponds to the assumption from our paper
         Returns:
@@ -108,7 +115,8 @@ class UnifiedkappaManager:
         """
         Args:
             freqs (np.array[nqpt, nband], dtype=float): phonon frequencies in 2*pi*THz
-            Gamma (np.array[nqpt, nband], dtype=float): phonon lifetimes in ps
+            Gamma (np.array[nqpt, nband], dtype=float): phonon scattering rates
+                in units of ps^(-1)
             gvfull (np.array[nqpt, nband, nband, 3], dtype=complex): full diagonal and
                 off-diagonal group velocities in km/s
             temperature (float): temperature in Kelvin
@@ -117,7 +125,7 @@ class UnifiedkappaManager:
             filename_prefix (str)
         """
         if filename_prefix is None:
-            filename_prefix = f"unifiedkappa-{temperature}"
+            filename_prefix = f"unifiedkappa-{int(temperature)}"
 
         # Units
         hbar = 1.054571726470000e-022
@@ -205,7 +213,7 @@ class UnifiedkappaManager:
                 print(message)
 
         # Mesh
-        vprint(f"Running phonon mesh... {self.mesh=}", verbose)
+        vprint(f"Running phonon mesh... mesh={self.mesh}", verbose)
         mesh_dict = self.get_mesh_dict()
         freqs = mesh_dict["frequencies"] * 2 * np.pi  # THz -> 2*pi*THz
         gvfull = mesh_dict["group_velocities_full"] / 10.0  # Angs*THz -> nm*THz == km/s
@@ -221,12 +229,12 @@ class UnifiedkappaManager:
                     verbose,
                 )
                 Gamma = self.get_maximum_scattering_rates(freqs, tau_factor=tau_factor)
-                filename_prefix = f"minikappa-{temperature}-{tau_factor}"
+                filename_prefix = f"minikappa-{int(temperature)}-{tau_factor}"
                 kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
                     freqs,
                     Gamma,
                     gvfull,
-                    temperature=temperature,
+                    temperature=float(temperature),
                     filename_prefix=filename_prefix,
                 )
                 results[temperature][tau_factor]["D"] = kappaD
@@ -265,13 +273,16 @@ class UnifiedkappaManager:
                 vprint("", verbose)
         return results
 
-    def run_unified_kappa(self, shengbte_dir, verbose=True):
+    def run_unified_kappa(self, verbose=True):
         def vprint(message, verbose=True):
             if verbose:
                 print(message)
 
+        if self.shengbte_dir is None:
+            raise RuntimeError("shengbte_dir must be set to run unified kappa")
+
         # Mesh
-        vprint(f"Running phonon mesh... {self.mesh=}", verbose)
+        vprint(f"Running phonon mesh... mesh={self.mesh}", verbose)
         mesh_dict = self.get_mesh_dict()
         freqs = mesh_dict["frequencies"] * 2 * np.pi  # THz -> 2*pi*THz
         gvfull = mesh_dict["group_velocities_full"] / 10.0  # Angs*THz -> nm*THz == km/s
@@ -306,18 +317,18 @@ class UnifiedkappaManager:
                         kappa_matrix.flatten(),
                         decimals=8,
                     )
-                    fw.write("".join([f"{num:>14.8f}" for num in kappa_matrix]) + "\n")
+                    fw.write("".join([f"{num:>15.8f}" for num in kappa_matrix]) + "\n")
             kappaD_scalar = np.mean(np.diag(kappaD))
             kappaOD_scalar = np.mean(np.diag(kappaOD))
             kappaF_scalar = np.mean(np.diag(kappaF))
 
             vprint(
-                "Diagonal part of thermal conductivity: " 
+                "Diagonal part of thermal conductivity: "
                 + f"{kappaD_scalar:.3f} W/m/K",
                 verbose,
             )
             vprint(
-                "Off-diagonal part of thermal conductivity: " 
+                "Off-diagonal part of thermal conductivity: "
                 + f"{kappaOD_scalar:.3f} W/m/K",
                 verbose,
             )
@@ -338,13 +349,16 @@ class UnifiedkappaManager:
         kwargs=None,
     ):
         """
+        Construct UnifiedkappaManager from a set of parameters
+
         Args:
-            poscar_path (str): path to POSCAR file
+            poscar_path (str | Path): path to POSCAR file
             supercell_matrix (3x3 array[int]): supercell matrix
             primitive_matrix (3x3 array[float]): primitive matrix
-            force_constants_filename (str): path to harmonic force constants file
-            kwargs (optional, dict): dictionary with mesh, temperatures, or tau
-                factors
+            force_constants_filename (str | Path): path to harmonic force
+                constants file
+            kwargs (optional, dict): dictionary with mesh, n_histogram_bins, or
+                save_histogram
         """
         if kwargs is None:
             kwargs = {}
@@ -352,8 +366,8 @@ class UnifiedkappaManager:
         phonon = phonopy.load(
             supercell_matrix=supercell_matrix,
             primitive_matrix=primitive_matrix,
-            unitcell_filename=poscar_path,
-            force_constants_filename=force_constants_filename,
+            unitcell_filename=str(poscar_path),
+            force_constants_filename=str(force_constants_filename),
             is_symmetry=False,
         )
         return cls(phonon, **kwargs)
@@ -362,11 +376,23 @@ class UnifiedkappaManager:
     def from_control(
         cls,
         shengbte_dir,
-        control_filename="CONTROL",
         poscar_filename="POSCAR",
         force_constants_filename="FORCE_CONSTANTS_2ND",
         kwargs=None,
     ):
+        """
+        Construct UnifiedkappaManager from a ShengBTE CONTROL file in
+        shengbte_dir. This method is preferred as the mesh is matched with
+        ngrid from CONTROL.
+
+        Args:
+            shengbte_dir (str | Path)
+            poscar_filename (str): path to POSCAR filename in shengbte_dir
+            force_constants_filename (str): harmonic force constants filename
+                in shengbte_dir
+            kwargs (optional, dict): dictionary with mesh, n_histogram_bins, or
+                save_histogram
+        """
         if kwargs is None:
             kwargs = {}
 
@@ -382,7 +408,7 @@ class UnifiedkappaManager:
             force_constants_filename=force_constants_path,
             is_symmetry=False,
         )
-        kwargs.update({"mesh": sbte.ngrid})
+        kwargs.update({"mesh": sbte.ngrid, "shengbte_dir": shengbte_dir})
         return cls(phonon, **kwargs)
 
 
@@ -401,6 +427,15 @@ def read_minikappa_file(fpath, verbose=False):
 
 if __name__ == "__main__":
     """
+    Here's an example of using from_control to calculate unified_kappa
+    """
+    shengbte_dir = Path(".")
+    poscar_filename = "POSCAR-prim"
+    unifiedkappa_manager = UnifiedkappaManager.from_control(
+        shengbte_dir=shengbte_dir,
+        poscar_filename=poscar_filename,
+    )
+    """
     Here's an example of using from_data to calculate kL_min
     """
     # unifiedkappa_manager = UnifiedkappaManager.from_parameters(
@@ -412,19 +447,10 @@ if __name__ == "__main__":
     #         "mesh": [25, 25, 25],
     #     },
     # )
-    # results = unifiedkappa_manager.run_minikappa(
-    #     temperatures=[300.0], 
-    #     tau_factors=[2.0],
-    #     verbose=True
-    # )
 
-    """
-    Here's an example of using from_control to calculate unified_kappa
-    """
-    shengbte_dir = Path(".")
-    poscar_filename = "POSCAR-prim"
-    unifiedkappa_manager = UnifiedkappaManager.from_control(
-        shengbte_dir=shengbte_dir,
-        poscar_filename=poscar_filename,
+    unifiedkappa_results = unifiedkappa_manager.run_unified_kappa(shengbte_dir)
+    minikappa_results = unifiedkappa_manager.run_minikappa(
+        temperatures=[300.0],
+        tau_factors=[2.0],
+        verbose=True,
     )
-    results = unifiedkappa_manager.run_unified_kappa(shengbte_dir)
