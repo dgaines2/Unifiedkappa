@@ -4,7 +4,8 @@ from pathlib import Path
 import numpy as np
 import phonopy
 from phonopy import Phonopy
-from shengbte_analyzer import ShengbteAnalyzer
+
+from shengbte_analysis import ShengBTEAnalyzer
 
 """
 author: @yixia
@@ -289,14 +290,14 @@ class UnifiedkappaManager:
 
         # kappa
         results = {}
-        sbte = ShengbteAnalyzer(shengbte_dir, scattering_rate_cutoff=0.0)
+        sbte = ShengBTEAnalyzer(self.shengbte_dir, scattering_rate_cutoff=0.0)
         for temperature in sbte.temperatures:
             results[temperature] = {}
             vprint(
                 f"Calculating unified kappa... T={temperature}K",
                 verbose,
             )
-            Gamma = sbte.rates_fbz[f"{temperature}"]
+            Gamma = sbte.rates_rta_fbz[f"{temperature}"]
             filename_prefix = f"unifiedkappa-{temperature}"
             kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
                 freqs,
@@ -397,12 +398,12 @@ class UnifiedkappaManager:
             kwargs = {}
 
         shengbte_dir = Path(shengbte_dir)
-        sbte = ShengbteAnalyzer(shengbte_dir)
+        sbte = ShengBTEAnalyzer(shengbte_dir)
         poscar_path = str(shengbte_dir / poscar_filename)
         force_constants_path = str(shengbte_dir / force_constants_filename)
 
         phonon = phonopy.load(
-            supercell_matrix=np.diag(sbte.scell),
+            supercell_matrix=sbte.scell_matrix,
             primitive_matrix=np.eye(3),
             unitcell_filename=poscar_path,
             force_constants_filename=force_constants_path,

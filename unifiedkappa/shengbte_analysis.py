@@ -10,7 +10,7 @@ author: @dgaines2
 """
 
 
-class ShengbteAnalyzer:
+class ShengBTEAnalyzer:
     """
     Simple class to extract information from ShengBTE/FourPhonon inputs and outputs
     """
@@ -38,12 +38,14 @@ class ShengbteAnalyzer:
         self._read_frequencies()
         self._read_dos()
         self._read_qpoints()
-        self._read_gruneisen()
         self._read_group_velocities()
         self._read_phase_space()
-        self._read_scattering_rates()
-        self._read_kappa()
-        self._read_unified_kappa()
+        if not self.onlyharmonic:
+            self._read_gruneisen()
+            self._read_scattering_rates()
+            self._read_kappa()
+            self._read_unified_kappa()
+            self._read_cumulative_kappas()
 
     def _check_complete(self):
         bte_out_path = self.workdir / "BTE.out"
@@ -52,8 +54,7 @@ class ShengbteAnalyzer:
         with open(bte_out_path) as fr:
             bte_out = [line.strip() for line in fr.readlines()]
         complete = False
-        # goodlines = ["normal exit", "onlyharmonic=.true., stopping here"]
-        goodlines = ["normal exit"]
+        goodlines = ["normal exit", "onlyharmonic=.true., stopping here"]
         for line in bte_out:
             if any(goodline in line for goodline in goodlines):
                 complete = True
@@ -88,8 +89,12 @@ class ShengbteAnalyzer:
         return np.asarray(self.control["ngrid"], dtype=int)
 
     @property
+    def lfactor(self):
+        return self.control.get("lfactor", 1.0)
+
+    @property
     def lattice(self):
-        return np.asarray(self.control["lattvec"], dtype=float) * self.control["lfactor"]
+        return np.asarray(self.control["lattvec"], dtype=float) * self.lfactor
 
     @property
     def volume(self):
@@ -108,6 +113,10 @@ class ShengbteAnalyzer:
         return np.asarray(self.control["scell"], dtype=int)
 
     @property
+    def scell_matrix(self):
+        return np.diag(self.scell)
+
+    @property
     def temperatures(self):
         if "t" in self.control:
             return np.asarray([self.control["t"]], dtype=int)
@@ -119,39 +128,43 @@ class ShengbteAnalyzer:
 
     @property
     def scalebroad(self):
-        return self.control["scalebroad"]
+        return self.control.get("scalebroad", 1.0)
 
     @property
     def maxiter(self):
-        return self.control["maxiter"]
+        return self.control.get("maxiter", 1000)
 
     @property
     def num_sample_process_3ph_phase_space(self):
-        return self.control["num_sample_process_3ph_phase_space"]
+        return self.control.get("num_sample_process_3ph_phase_space", -1)
 
     @property
     def num_sample_process_3ph(self):
-        return self.control["num_sample_process_3ph"]
+        return self.control.get("num_sample_process_3ph", -1)
 
     @property
     def num_sample_process_4ph_phase_space(self):
-        return self.control["num_sample_process_4ph_phase_space"]
+        return self.control.get("num_sample_process_4ph_phase_space", -1)
 
     @property
     def num_sample_process_4ph(self):
-        return self.control["num_sample_process_4ph"]
+        return self.control.get("num_sample_process_4ph", -1)
 
     @property
     def convergence(self):
-        return self.control["convergence"]
+        return self.control.get("convergence", True)
+
+    @property
+    def onlyharmonic(self):
+        return self.control.get("onlyharmonic", False)
 
     @property
     def four_phonon(self):
-        return self.control["four_phonon"]
+        return self.control.get("four_phonon", False)
 
     @property
     def four_phonon_iteration(self):
-        return self.control["four_phonon_iteration"]
+        return self.control.get("four_phonon_iteration", False)
 
     @property
     def nbands(self):
@@ -253,14 +266,6 @@ class ShengbteAnalyzer:
     def idx_fbz_to_ibz(self):
         return self._idx_fbz_to_ibz
 
-    def _read_gruneisen(self):
-        gruneisen_path = self.workdir / "BTE.gruneisen"
-        self._gruneisen = np.loadtxt(gruneisen_path)
-
-    @property
-    def gruneisen(self):
-        return self._gruneisen
-
     def _read_group_velocities(self):
         group_velocity_path = self.workdir / "BTE.v"
         group_velocity = np.loadtxt(group_velocity_path)
@@ -269,21 +274,21 @@ class ShengbteAnalyzer:
             order="F",
         )
         self._group_velocity = group_velocity
-        group_velocity_full_path = self.workdir / "BTE.v_full"
-        group_velocity_full = np.loadtxt(group_velocity_full_path)
-        group_velocity_full = group_velocity_full.reshape(
+        group_velocity_fbz_path = self.workdir / "BTE.v_full"
+        group_velocity_fbz = np.loadtxt(group_velocity_fbz_path)
+        group_velocity_fbz = group_velocity_fbz.reshape(
             (self.nq_fbz, self.nbands, 3),
             order="F",
         )
-        self._group_velocity_full = group_velocity_full
+        self._group_velocity_fbz = group_velocity_fbz
 
     @property
     def group_velocity(self):
         return self._group_velocity
 
     @property
-    def group_velocity_full(self):
-        return self._group_velocity_full
+    def group_velocity_fbz(self):
+        return self._group_velocity_fbz
 
     def _read_phase_space(self):
         p3_path = self.workdir / "BTE.P3"
@@ -301,6 +306,22 @@ class ShengbteAnalyzer:
         return self._p4
 
     @property
+    def p3_total(self):
+        return np.sum(self.qpoint_degeneracy.reshape(-1, 1) * self.p3)
+
+    @property
+    def p4_total(self):
+        return np.sum(self.qpoint_degeneracy.reshape(-1, 1) * self.p4)
+
+    def _read_gruneisen(self):
+        gruneisen_path = self.workdir / "BTE.gruneisen"
+        self._gruneisen = np.loadtxt(gruneisen_path)
+
+    @property
+    def gruneisen(self):
+        return self._gruneisen
+
+    @property
     def temperature_dirs(self):
         """Search the BTE directory for all temperature directories matching T*K"""
         return [
@@ -312,39 +333,41 @@ class ShengbteAnalyzer:
         ]
 
     def _read_scattering_rates(self):
-        self._rates3 = {}
-        self._rates4 = {}
-        self._rates = {}
+        rates_map = {
+            "rates3": "BTE.w_3ph",
+            "rates4": "BTE.w_4ph",
+            "rates_rta": "BTE.w",
+            "rates": "BTE.w_final",
+        }
         for temperature_dir in self.temperature_dirs:
             temperature = temperature_dir.name.strip("TK")
-            w_3ph_path = temperature_dir / "BTE.w_3ph"
-            if w_3ph_path.exists():
-                w_3ph = np.loadtxt(w_3ph_path, usecols=1)
-                w_3ph = self.map_flat_quantity_to_q_nu(w_3ph)
+            for rate_type, rate_filename in rates_map.items():
+                rates_file = temperature_dir / rate_filename
+                if not rates_file.exists():
+                    continue
+                rates = np.loadtxt(rates_file, usecols=1)
+                rates = self.map_flat_quantity_to_q_nu(rates)
                 if self.scattering_rate_cutoff is not None:
-                    w_3ph = np.nan_to_num(w_3ph, nan=0.0)
-                    w_3ph = np.where(w_3ph > self.scattering_rate_cutoff, w_3ph, 1e10)
-                self._rates3[temperature] = w_3ph
-            w_4ph_path = temperature_dir / "BTE.w_4ph"
-            if w_4ph_path.exists():
-                w_4ph = np.loadtxt(w_4ph_path, usecols=1)
-                w_4ph = self.map_flat_quantity_to_q_nu(w_4ph)
-                if self.scattering_rate_cutoff is not None:
-                    w_4ph = np.nan_to_num(w_4ph, nan=0.0)
-                    w_4ph = np.where(w_4ph > self.scattering_rate_cutoff, w_4ph, 1e10)
-                self._rates4[temperature] = w_4ph
-            w_all_path = temperature_dir / "BTE.w"
-            if w_all_path.exists():
-                w_all = np.loadtxt(w_all_path, usecols=1)
-                w_all = self.map_flat_quantity_to_q_nu(w_all)
-                if self.scattering_rate_cutoff is not None:
-                    w_all = np.nan_to_num(w_all, nan=0.0)
-                    w_all = np.where(w_all > self.scattering_rate_cutoff, w_all, 1e10)
-                self._rates[temperature] = w_all
+                    rates = np.nan_to_num(rates, nan=0.0)
+                    rates = np.where(
+                        rates > self.scattering_rate_cutoff,
+                        rates,
+                        1e10,
+                    )
+                hidden_rate_name = f"_{rate_type}"
+                current_rate_attr = getattr(self, hidden_rate_name, None)
+                if current_rate_attr is None:
+                    current_rate_attr = {}
+                    setattr(self, hidden_rate_name, current_rate_attr)
+                current_rate_attr[temperature] = rates
 
     @property
     def rates(self):
         return self._rates
+
+    @property
+    def rates_rta(self):
+        return self._rates_rta
 
     @property
     def rates3(self):
@@ -362,6 +385,13 @@ class ShengbteAnalyzer:
         return rates_fbz
 
     @property
+    def rates_rta_fbz(self):
+        rates_rta_fbz = {}
+        for temperature, rates_T in self.rates_rta.items():
+            rates_rta_fbz[temperature] = self.map_ibz_quantity_to_fbz(rates_T)
+        return rates_rta_fbz
+
+    @property
     def rates3_fbz(self):
         rates3_fbz = {}
         for temperature, rates_T in self.rates3.items():
@@ -375,7 +405,8 @@ class ShengbteAnalyzer:
             rates4_fbz[temperature] = self.map_ibz_quantity_to_fbz(rates_T)
         return rates4_fbz
 
-    def _get_kappa_as_scalar(self, kappa_tensor):
+    @staticmethod
+    def get_kappa_as_scalar(kappa_tensor):
         if len(kappa_tensor) == 9:
             kappa_tensor = kappa_tensor.reshape(3, 3)
         return np.mean(np.diag(kappa_tensor))
@@ -388,7 +419,7 @@ class ShengbteAnalyzer:
             kappa_tensor_path = temperature_dir / "BTE.kappa_tensor"
             kappa_tensor_file = np.loadtxt(kappa_tensor_path)
             kappa_tensor = kappa_tensor_file[-1, 1:]
-            kappa = self._get_kappa_as_scalar(kappa_tensor)
+            kappa = self.get_kappa_as_scalar(kappa_tensor)
             if self.kappa_precision is not None:
                 kappa = np.round(kappa, decimals=self.kappa_precision)
                 kappa_tensor = np.round(kappa_tensor, decimals=self.kappa_precision)
@@ -417,7 +448,7 @@ class ShengbteAnalyzer:
 
         for kappa_name, temperature_dict in unified_results.items():
             for temperature, kappa_tensor in temperature_dict.items():
-                kappa_scalar = self._get_kappa_as_scalar(kappa_tensor)
+                kappa_scalar = self.get_kappa_as_scalar(kappa_tensor)
                 if self.kappa_precision is not None:
                     kappa_scalar = np.round(kappa_scalar, decimals=self.kappa_precision)
                     kappa_tensor = np.round(kappa_tensor, decimals=self.kappa_precision)
@@ -429,11 +460,11 @@ class ShengbteAnalyzer:
         return self._unified_kappa
 
     @property
-    def unified_kappa_d(self):
+    def unified_kappa_D(self):
         return self._unified_kappa_d
 
     @property
-    def unified_kappa_od(self):
+    def unified_kappa_OD(self):
         return self._unified_kappa_od
 
     @property
@@ -441,16 +472,91 @@ class ShengbteAnalyzer:
         return self._unified_kappa_tensor
 
     @property
-    def unified_kappa_d_tensor(self):
+    def unified_kappa_D_tensor(self):
         return self._unified_kappa_d_tensor
 
     @property
-    def unified_kappa_od_tensor(self):
+    def unified_kappa_OD_tensor(self):
         return self._unified_kappa_od_tensor
+
+    def _read_cumulative_kappas(self):
+        ckappa_map = {
+            "ckappa_tensor_vs_mfp": {
+                "fname": "BTE.cumulative_kappa_tensor",
+                "xname": "mfp",
+            },
+            "ckappa_tensor_vs_omega": {
+                "fname": "BTE.cumulative_kappaVsOmega_tensor",
+                "xname": "omega",
+            },
+        }
+        for temperature_dir in self.temperature_dirs:
+            temperature = temperature_dir.name.strip("TK")
+            for ckappa_name, ckappa_info in ckappa_map.items():
+                ckappa_file = temperature_dir / ckappa_info["fname"]
+                ckappa_data = np.loadtxt(ckappa_file)
+
+                hidden_ckappa_name = f"_{ckappa_name}"
+                current_ckappa_attr = getattr(self, hidden_ckappa_name, None)
+                if current_ckappa_attr is None:
+                    current_ckappa_attr = {}
+                    setattr(self, hidden_ckappa_name, current_ckappa_attr)
+                current_ckappa_attr[temperature] = {
+                    ckappa_info["xname"]: ckappa_data[:, 0],
+                    "ckappa": ckappa_data[:, 1:],
+                }
+
+    @property
+    def ckappa_vs_omega(self):
+        ckappa_vs_omega = {}
+        for temperature, ckappa_dict in self.ckappa_tensor_vs_omega.items():
+            ckappa_vs_omega[temperature] = {
+                "omega": ckappa_dict["omega"],
+                "ckappa": np.apply_along_axis(
+                    self.get_kappa_as_scalar,
+                    1,
+                    ckappa_dict["ckappa"],
+                ),
+            }
+        return ckappa_vs_omega
+
+    @property
+    def ckappa_tensor_vs_omega(self):
+        return self._ckappa_tensor_vs_omega
+
+    @property
+    def ckappa_vs_mfp(self):
+        ckappa_vs_mfp = {}
+        for temperature, ckappa_dict in self.ckappa_tensor_vs_mfp.items():
+            ckappa_vs_mfp[temperature] = {
+                "mfp": ckappa_dict["mfp"],
+                "ckappa": np.apply_along_axis(
+                    self.get_kappa_as_scalar,
+                    1,
+                    ckappa_dict["ckappa"],
+                ),
+            }
+        return ckappa_vs_mfp
+
+    @property
+    def ckappa_tensor_vs_mfp(self):
+        return self._ckappa_tensor_vs_mfp
+
+
+def unwrap_qpoints(qpoints):
+    """
+    Convert fractional qpoint coordinates into ShengBTE format (such that there
+    are no negative values)
+    """
+    n_qpoints = len(qpoints)
+    qpoints = qpoints.flatten()
+    qpoints = np.where(qpoints >= 0, qpoints, 1 - np.abs(qpoints))
+    qpoints = qpoints.reshape(n_qpoints, -1)
+    return qpoints
 
 
 if __name__ == "__main__":
-    sbte = ShengbteAnalyzer(".")
+    sbte = ShengBTEAnalyzer(".")
     print("qpoints analysis")
     print(f"{sbte.nq=} {sbte.qpoints.shape}")
     print(f"{sbte.qpoints=}")
