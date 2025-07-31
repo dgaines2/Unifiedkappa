@@ -1,0 +1,430 @@
+import itertools
+from pathlib import Path
+
+import numpy as np
+import phonopy
+from phonopy import Phonopy
+from shengbte_analyzer import ShengbteAnalyzer
+
+"""
+author: @yixia
+author: @dgaines2
+A python class to compute kL_min
+
+The calculation of kL_min relies on modified versions of:
+    - api_phonopy.py -> from phonopy import Phonopy
+    - mesh.py -> from phonopy.phonon.mesh import Mesh
+    - group_velocity.py -> from phonopy.phonon.group_velocity import GroupVelocity
+for Phonopy version 2.17.1
+"""
+
+
+class LibraryModificationRequired(Exception):
+    """Raised when the required library modifications have not been made."""
+    pass
+
+
+class UnifiedkappaManager:
+    def __init__(
+        self,
+        phonon,
+        mesh=25.0,
+        n_histogram_bins=50,
+        save_histogram=False,
+    ):
+        """
+        Args:
+            phonon (phonopy.Phonopy)
+            mesh (float | 1x3 array[int]): q-point mesh density
+            temperatures (array[float]) in Kelvin
+            n_histogram_bins (int)
+            save_histogram (bool)
+        """
+        self.phonon = phonon
+        self.mesh = mesh
+        self.n_histogram_bins = n_histogram_bins
+        self.save_histogram = save_histogram
+
+    def get_mesh_dict(self):
+        try:
+            self.phonon.run_mesh(
+                self.mesh,
+                with_eigenvectors=False,
+                is_gamma_center=True,
+                with_full_group_velocities=True,
+                is_time_reversal=False,
+                is_mesh_symmetry=False,
+            )
+        except TypeError as e:
+            if "full_group_velocities" in str(e):
+                raise LibraryModificationRequired(
+                    "Phonopy must be modified to calculate off-diagonal group "
+                    "velocities. Be sure to make modifications to Phonopy 2.17.1. "
+                    "See more details in the README here: "
+                    "https://github.com/yimavxia/Minikappa/tree/main/scripts"
+                ) from e
+            else:
+                raise
+        mesh_dict = self.phonon.get_mesh_dict()
+        return mesh_dict
+
+    @staticmethod
+    def get_maximum_scattering_rates(freqs, tau_factor):
+        """
+        Args:
+            freqs (np.array[nqpt, nband])
+            tau_factor (float)
+                Note: tau_factor=2 corresponds to the assumption from our paper
+        Returns:
+            Gamma (np.array(nqpt, nband]): scattering rate for each phonon mode
+        """
+        nqpt, nband = freqs.shape
+        Gamma = np.ones((nqpt, nband)) * 1e10
+        for iq, i in itertools.product(range(nqpt), range(nband)):
+            omega = freqs[iq, i]
+            if omega > 0:
+                Gamma[iq, i] = omega / 2 / np.pi * tau_factor
+        return Gamma
+
+    @staticmethod
+    def get_planckian_scattering_rates(freqs, temperature):
+        nqpt, nband = freqs.shape
+        Gamma = np.ones((nqpt, nband)) * 1e10
+        for iq, i in itertools.product(range(nqpt), range(nband)):
+            omega = freqs[iq, i]
+            if omega > 0:
+                Gamma[iq, i] = 0.13092 * temperature
+        return Gamma
+
+    def calculate_unified_kappa(
+        self,
+        freqs,
+        Gamma,
+        gvfull,
+        temperature=300.0,
+        freqcf=0.1,
+        filename_prefix=None,
+    ):
+        """
+        Args:
+            freqs (np.array[nqpt, nband], dtype=float): phonon frequencies in 2*pi*THz
+            Gamma (np.array[nqpt, nband], dtype=float): phonon lifetimes in ps
+            gvfull (np.array[nqpt, nband, nband, 3], dtype=complex): full diagonal and
+                off-diagonal group velocities in km/s
+            temperature (float): temperature in Kelvin
+            freqcf (float): cutoff frequency. Any frequency below this value will not
+                contribute to the thermal conductivity
+            filename_prefix (str)
+        """
+        if filename_prefix is None:
+            filename_prefix = f"unifiedkappa-{temperature}"
+
+        # Units
+        hbar = 1.054571726470000e-022
+        kB = 1.380648813000000e-023
+
+        volpc = self.phonon.primitive.volume / 1000.0  # Angs^3 to nm^3
+        nqpt, nband = freqs.shape
+
+        delta_freq = np.max(freqs + 1e-01) / self.n_histogram_bins
+        histogram_kappa_d = np.zeros(
+            (self.n_histogram_bins, self.n_histogram_bins, 3, 3)
+        )
+        histogram_kappa_od = np.zeros(
+            (self.n_histogram_bins, self.n_histogram_bins, 3, 3)
+        )
+
+        kappaband = np.zeros((nband, nband, 3, 3), dtype=np.complex128, order="C")
+        for iq, i, j, k, kp in itertools.product(
+            range(nqpt),
+            range(nband),
+            range(nband),
+            range(3),
+            range(3),
+        ):
+            omega1 = freqs[iq, i]
+            omega2 = freqs[iq, j]
+            if omega1 <= freqcf or omega2 <= freqcf:
+                continue
+            Gamma1 = Gamma[iq, i]
+            Gamma2 = Gamma[iq, j]
+            fBE1 = 1.0 / (np.exp(hbar * omega1 / kB / temperature) - 1.0)
+            fBE2 = 1.0 / (np.exp(hbar * omega2 / kB / temperature) - 1.0)
+            tmpv = (gvfull[iq, i, j, k] * gvfull[iq, j, i, kp]).real
+            kappaband_tmp = (omega1+omega2)/2 * \
+                (fBE1*(fBE1+1)*omega1+fBE2*(fBE2+1)*omega2) * tmpv \
+                / (4*(omega1-omega2)**2+(Gamma1+Gamma2)**2) \
+                * (Gamma1+Gamma2)
+            kappaband[i, j, k, kp] += kappaband_tmp
+
+            idx_freq1 = int(omega1 // delta_freq)
+            idx_freq2 = int(omega2 // delta_freq)
+            if i == j:
+                histogram_kappa_d[idx_freq1, idx_freq2, k, kp] += kappaband_tmp
+            else:
+                histogram_kappa_od[idx_freq1, idx_freq2, k, kp] += kappaband_tmp
+
+        # conversion
+        unit_factor = 1e21 * hbar**2 / (kB * temperature**2 * volpc * nqpt)
+        kappaband *= unit_factor
+        histogram_kappa_d *= unit_factor
+        histogram_kappa_od *= unit_factor
+        if self.save_histogram:
+            for direction, index in zip(["xx", "yy", "zz"], [0, 1, 2]):
+                np.savetxt(
+                    f"{filename_prefix}-d_{direction}.txt",
+                    histogram_kappa_d[:, :, index, index],
+                )
+                np.savetxt(
+                    f"{filename_prefix}-od_{direction}.txt",
+                    histogram_kappa_od[:, :, index, index],
+                )
+
+        kappaD = np.zeros((3, 3), dtype=np.complex128, order="C")
+        kappaOD = np.zeros((3, 3), dtype=np.complex128, order="C")
+        kappaF = np.zeros((3, 3), dtype=np.complex128, order="C")
+        for i, j in itertools.product(range(nband), range(nband)):
+            kappaF += kappaband[i, j]
+            if i == j:
+                kappaD += kappaband[i, j]
+            else:
+                kappaOD += kappaband[i, j]
+        kappaD = kappaD.real
+        kappaOD = kappaOD.real
+        kappaF = kappaF.real
+        return kappaD, kappaOD, kappaF
+
+    def run_minikappa(
+        self,
+        temperatures=[300.0, 600.0, 900.0],
+        tau_factors=[2.0],
+        verbose=True,
+    ):
+        def vprint(message, verbose=True):
+            if verbose:
+                print(message)
+
+        # Mesh
+        vprint(f"Running phonon mesh... {self.mesh=}", verbose)
+        mesh_dict = self.get_mesh_dict()
+        freqs = mesh_dict["frequencies"] * 2 * np.pi  # THz -> 2*pi*THz
+        gvfull = mesh_dict["group_velocities_full"] / 10.0  # Angs*THz -> nm*THz == km/s
+
+        # kappa
+        results = {}
+        for temperature in temperatures:
+            results[temperature] = {}
+            for tau_factor in tau_factors:
+                results[temperature][tau_factor] = {}
+                vprint(
+                    f"Calculating minikappa... T={temperature}K, tau={tau_factor}",
+                    verbose,
+                )
+                Gamma = self.get_maximum_scattering_rates(freqs, tau_factor=tau_factor)
+                filename_prefix = f"minikappa-{temperature}-{tau_factor}"
+                kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
+                    freqs,
+                    Gamma,
+                    gvfull,
+                    temperature=temperature,
+                    filename_prefix=filename_prefix,
+                )
+                results[temperature][tau_factor]["D"] = kappaD
+                results[temperature][tau_factor]["OD"] = kappaOD
+                results[temperature][tau_factor]["F"] = kappaF
+
+                output_filename = f"{filename_prefix}.dat"
+                vprint(f"Writing to {output_filename}", verbose)
+                with open(output_filename, "w+") as fw:
+                    for kappa_matrix in [kappaD, kappaOD, kappaF]:
+                        kappa_matrix = np.round(
+                            kappa_matrix.flatten(),
+                            decimals=8,
+                        )
+                        fw.write(
+                            "".join([f"{num:>14.8f}" for num in kappa_matrix]) + "\n"
+                        )
+                kappaD_scalar = np.mean(np.diag(kappaD))
+                kappaOD_scalar = np.mean(np.diag(kappaOD))
+                kappaF_scalar = np.mean(np.diag(kappaF))
+
+                vprint(
+                    "Diagonal part of minimum thermal conductivity: "
+                    + f"{kappaD_scalar:.3f} W/m/K",
+                    verbose,
+                )
+                vprint(
+                    "Off-diagonal part of minimum thermal conductivity: "
+                    + f"{kappaOD_scalar:.3f} W/m/K",
+                    verbose,
+                )
+                vprint(
+                    f"Total minimum thermal conductivity: {kappaF_scalar:.3f} W/m/K",
+                    verbose,
+                )
+                vprint("", verbose)
+        return results
+
+    def run_unified_kappa(self, shengbte_dir, verbose=True):
+        def vprint(message, verbose=True):
+            if verbose:
+                print(message)
+
+        # Mesh
+        vprint(f"Running phonon mesh... {self.mesh=}", verbose)
+        mesh_dict = self.get_mesh_dict()
+        freqs = mesh_dict["frequencies"] * 2 * np.pi  # THz -> 2*pi*THz
+        gvfull = mesh_dict["group_velocities_full"] / 10.0  # Angs*THz -> nm*THz == km/s
+
+        # kappa
+        results = {}
+        sbte = ShengbteAnalyzer(shengbte_dir, scattering_rate_cutoff=0.0)
+        for temperature in sbte.temperatures:
+            results[temperature] = {}
+            vprint(
+                f"Calculating unified kappa... T={temperature}K",
+                verbose,
+            )
+            Gamma = sbte.rates_fbz[f"{temperature}"]
+            filename_prefix = f"unifiedkappa-{temperature}"
+            kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
+                freqs,
+                Gamma,
+                gvfull,
+                temperature=temperature,
+                filename_prefix=filename_prefix,
+            )
+            results[temperature]["D"] = kappaD
+            results[temperature]["OD"] = kappaOD
+            results[temperature]["F"] = kappaF
+
+            output_filename = f"{filename_prefix}.dat"
+            vprint(f"Writing to {output_filename}", verbose)
+            with open(output_filename, "w+") as fw:
+                for kappa_matrix in [kappaD, kappaOD, kappaF]:
+                    kappa_matrix = np.round(
+                        kappa_matrix.flatten(),
+                        decimals=8,
+                    )
+                    fw.write("".join([f"{num:>14.8f}" for num in kappa_matrix]) + "\n")
+            kappaD_scalar = np.mean(np.diag(kappaD))
+            kappaOD_scalar = np.mean(np.diag(kappaOD))
+            kappaF_scalar = np.mean(np.diag(kappaF))
+
+            vprint(
+                "Diagonal part of thermal conductivity: " 
+                + f"{kappaD_scalar:.3f} W/m/K",
+                verbose,
+            )
+            vprint(
+                "Off-diagonal part of thermal conductivity: " 
+                + f"{kappaOD_scalar:.3f} W/m/K",
+                verbose,
+            )
+            vprint(
+                f"Total thermal conductivity: {kappaF_scalar:.3f} W/m/K",
+                verbose,
+            )
+            vprint("", verbose)
+        return results
+
+    @classmethod
+    def from_parameters(
+        cls,
+        poscar_path,
+        supercell_matrix,
+        primitive_matrix,
+        force_constants_filename="FORCE_CONSTANTS",
+        kwargs=None,
+    ):
+        """
+        Args:
+            poscar_path (str): path to POSCAR file
+            supercell_matrix (3x3 array[int]): supercell matrix
+            primitive_matrix (3x3 array[float]): primitive matrix
+            force_constants_filename (str): path to harmonic force constants file
+            kwargs (optional, dict): dictionary with mesh, temperatures, or tau
+                factors
+        """
+        if kwargs is None:
+            kwargs = {}
+
+        phonon = phonopy.load(
+            supercell_matrix=supercell_matrix,
+            primitive_matrix=primitive_matrix,
+            unitcell_filename=poscar_path,
+            force_constants_filename=force_constants_filename,
+            is_symmetry=False,
+        )
+        return cls(phonon, **kwargs)
+
+    @classmethod
+    def from_control(
+        cls,
+        shengbte_dir,
+        control_filename="CONTROL",
+        poscar_filename="POSCAR",
+        force_constants_filename="FORCE_CONSTANTS_2ND",
+        kwargs=None,
+    ):
+        if kwargs is None:
+            kwargs = {}
+
+        shengbte_dir = Path(shengbte_dir)
+        sbte = ShengbteAnalyzer(shengbte_dir)
+        poscar_path = str(shengbte_dir / poscar_filename)
+        force_constants_path = str(shengbte_dir / force_constants_filename)
+
+        phonon = phonopy.load(
+            supercell_matrix=np.diag(sbte.scell),
+            primitive_matrix=np.eye(3),
+            unitcell_filename=poscar_path,
+            force_constants_filename=force_constants_path,
+            is_symmetry=False,
+        )
+        kwargs.update({"mesh": sbte.ngrid})
+        return cls(phonon, **kwargs)
+
+
+def read_minikappa_file(fpath, verbose=False):
+    minikappa_output = np.loadtxt(fpath)
+    kappaD, kappaOD, kappaF = minikappa_output.reshape(3, 3, 3)
+    kappaD_scalar = np.mean(np.diag(kappaD))
+    kappaOD_scalar = np.mean(np.diag(kappaOD))
+    kappaF_scalar = np.mean(np.diag(kappaF))
+    if verbose:
+        print(f"Diagonal part of thermal conductivity: {kappaD_scalar:.3f} W/m/K")
+        print(f"Off-diagonal part of thermal conductivity: {kappaOD_scalar:.3f} W/m/K")
+        print(f"Total thermal conductivity: {kappaF_scalar:.3f} W/m/K")
+    return kappaD, kappaOD, kappaF
+
+
+if __name__ == "__main__":
+    """
+    Here's an example of using from_data to calculate kL_min
+    """
+    # unifiedkappa_manager = UnifiedkappaManager.from_parameters(
+    #     poscar_path="POSCAR-prim",
+    #     supercell_matrix=np.eye(3) * 4,
+    #     primitive_matrix=np.eye(3),
+    #     force_constants_filename="FORCE_CONSTANTS_2ND",
+    #     kwargs={
+    #         "mesh": [25, 25, 25],
+    #     },
+    # )
+    # results = unifiedkappa_manager.run_minikappa(
+    #     temperatures=[300.0], 
+    #     tau_factors=[2.0],
+    #     verbose=True
+    # )
+
+    """
+    Here's an example of using from_control to calculate unified_kappa
+    """
+    shengbte_dir = Path(".")
+    poscar_filename = "POSCAR-prim"
+    unifiedkappa_manager = UnifiedkappaManager.from_control(
+        shengbte_dir=shengbte_dir,
+        poscar_filename=poscar_filename,
+    )
+    results = unifiedkappa_manager.run_unified_kappa(shengbte_dir)
