@@ -438,22 +438,33 @@ class ShengBTEAnalyzer:
         unified_results = defaultdict(dict)
         for temperature_dir in self.temperature_dirs:
             temperature = temperature_dir.name.strip("TK")
-            unified_kappa_path = temperature_dir / "unifiedkappa.dat"
+            unified_kappa_path = temperature_dir / f"unifiedkappa-{temperature}.dat"
             if not unified_kappa_path.exists():
                 continue
             unified_kappa_tensor_file = np.loadtxt(unified_kappa_path)
-            kappa_names = ["unified_kappa_d", "unified_kappa_od", "unified_kappa"]
-            for i, kappa_name in enumerate(kappa_names):
-                unified_results[kappa_name][temperature] = unified_kappa_tensor_file[i]
+            ukappa_names = ["unified_kappa_d", "unified_kappa_od", "unified_kappa"]
+            for i, ukappa_name in enumerate(ukappa_names):
+                unified_results[ukappa_name][temperature] = unified_kappa_tensor_file[i]
 
-        for kappa_name, temperature_dict in unified_results.items():
-            for temperature, kappa_tensor in temperature_dict.items():
-                kappa_scalar = self.get_kappa_as_scalar(kappa_tensor)
+        for ukappa_name, temperature_dict in unified_results.items():
+            for temperature, ukappa_tensor in temperature_dict.items():
+                ukappa_scalar = self.get_kappa_as_scalar(ukappa_tensor)
                 if self.kappa_precision is not None:
-                    kappa_scalar = np.round(kappa_scalar, decimals=self.kappa_precision)
-                    kappa_tensor = np.round(kappa_tensor, decimals=self.kappa_precision)
-                setattr(self, f"_{kappa_name}", kappa_scalar)
-                setattr(self, f"_{kappa_name}_tensor", kappa_tensor)
+                    ukappa_scalar = np.round(ukappa_scalar, decimals=self.kappa_precision)
+                    ukappa_tensor = np.round(ukappa_tensor, decimals=self.kappa_precision)
+
+                ukappa_attr_name = f"_{ukappa_name}"
+                current_ukappa_attr = getattr(self, ukappa_attr_name, None)
+                if current_ukappa_attr is None:
+                    current_ukappa_attr = {}
+                    setattr(self, ukappa_attr_name, current_ukappa_attr)
+                current_ukappa_attr[temperature] = ukappa_scalar
+                ukappa_tensor_attr_name = f"_{ukappa_name}_tensor"
+                current_ukappa_tensor_attr = getattr(self, ukappa_tensor_attr_name, None)
+                if current_ukappa_tensor_attr is None:
+                    current_ukappa_tensor_attr = {}
+                    setattr(self, ukappa_tensor_attr_name, current_ukappa_tensor_attr)
+                current_ukappa_tensor_attr[temperature] = ukappa_tensor
 
     @property
     def unified_kappa(self):
