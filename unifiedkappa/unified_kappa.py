@@ -1,9 +1,11 @@
 import itertools
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import phonopy
 from phonopy import Phonopy
+from phonopy.structure.symmetry import Symmetry, _symmetrize_2nd_rank_tensor
 
 from shengbte_analysis import ShengBTEAnalyzer
 
@@ -111,6 +113,7 @@ class UnifiedkappaManager:
         gvfull,
         temperature=300.0,
         freqcf=0.1,
+        symprec=1e-03,
         filename_prefix=None,
     ):
         """
@@ -123,6 +126,10 @@ class UnifiedkappaManager:
             temperature (float): temperature in Kelvin
             freqcf (float): cutoff frequency. Any frequency below this value will not
                 contribute to the thermal conductivity
+            symprec (float): if not None, symprec for determining the symmetry
+                of the crystal structure. This will be used to symmetrize the final
+                tensors to be invariant with respect to the symmetry operations of
+                the crystal structure
             filename_prefix (str): beginning of filename for saving outputs
         """
         # Units
@@ -200,6 +207,20 @@ class UnifiedkappaManager:
         kappaD = kappaD.real
         kappaOD = kappaOD.real
         kappaF = kappaF.real
+        if symprec is not None:
+            ph_symm = Symmetry(
+                self.phonon.primitive,
+                symprec=symprec,
+                is_symmetry=True,
+            )
+            symmetrize_2nd_rank_tensor = partial(
+                _symmetrize_2nd_rank_tensor,
+                symmetry_operations=ph_symm.pointgroup_operations,
+                lattice=self.phonon.primitive.cell,
+            )
+            kappaD = symmetrize_2nd_rank_tensor(kappaD)
+            kappaOD = symmetrize_2nd_rank_tensor(kappaOD)
+            kappaF = symmetrize_2nd_rank_tensor(kappaF)
         return kappaD, kappaOD, kappaF
 
     def run_minikappa(
