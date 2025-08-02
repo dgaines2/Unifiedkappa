@@ -123,11 +123,8 @@ class UnifiedkappaManager:
             temperature (float): temperature in Kelvin
             freqcf (float): cutoff frequency. Any frequency below this value will not
                 contribute to the thermal conductivity
-            filename_prefix (str)
+            filename_prefix (str): beginning of filename for saving outputs
         """
-        if filename_prefix is None:
-            filename_prefix = f"unifiedkappa-{int(temperature)}"
-
         # Units
         hbar = 1.054571726470000e-022
         kB = 1.380648813000000e-023
@@ -179,6 +176,8 @@ class UnifiedkappaManager:
         histogram_kappa_d *= unit_factor
         histogram_kappa_od *= unit_factor
         if self.save_histogram:
+            if filename_prefix is None:
+                filename_prefix = f"unifiedkappa-{int(temperature)}"
             for direction, index in zip(["xx", "yy", "zz"], [0, 1, 2]):
                 np.savetxt(
                     f"{filename_prefix}-d_{direction}.txt",
@@ -207,6 +206,7 @@ class UnifiedkappaManager:
         self,
         temperatures=[300.0, 600.0, 900.0],
         tau_factors=[2.0],
+        output_dir=None,
         verbose=True,
     ):
         def vprint(message, verbose=True):
@@ -230,7 +230,11 @@ class UnifiedkappaManager:
                     verbose,
                 )
                 Gamma = self.get_maximum_scattering_rates(freqs, tau_factor=tau_factor)
-                filename_prefix = f"minikappa-{int(temperature)}-{tau_factor}"
+                if output_dir is None:
+                    output_dir = Path(".")
+                filename_prefix = str(
+                    output_dir / f"minikappa-{int(temperature)}-{tau_factor}"
+                )
                 kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
                     freqs,
                     Gamma,
@@ -298,7 +302,8 @@ class UnifiedkappaManager:
                 verbose,
             )
             Gamma = sbte.rates_rta_fbz[f"{temperature}"]
-            filename_prefix = f"unifiedkappa-{temperature}"
+            temperature_dir = Path(f"T{temperature}K")
+            filename_prefix = str(temperature_dir / "unifiedkappa")
             kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
                 freqs,
                 Gamma,

@@ -438,7 +438,7 @@ class ShengBTEAnalyzer:
         unified_results = defaultdict(dict)
         for temperature_dir in self.temperature_dirs:
             temperature = temperature_dir.name.strip("TK")
-            unified_kappa_path = temperature_dir / f"unifiedkappa-{temperature}.dat"
+            unified_kappa_path = temperature_dir / f"unifiedkappa.dat"
             if not unified_kappa_path.exists():
                 continue
             unified_kappa_tensor_file = np.loadtxt(unified_kappa_path)
