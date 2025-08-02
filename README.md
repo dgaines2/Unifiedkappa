@@ -11,7 +11,7 @@ Scripts for computing the diagonal and off-diagonal contributions to lattice the
 > [!NOTE]
 > Don't worry, we only extend the functionality and all original functionality is maintained!
 
-* Go to the folder `unifiedkappa/example` and run `python ../unified_kappa.py`
+* Go to the folder `unifiedkappa/shengbte_example` and run `python ../unified_kappa.py`
   - This folder contains the inputs and outputs typically found in ShengBTE calculations
   - Minikappa outputs are saved in the base ShengBTE (or phonopy) directory as they're based on only harmonic properties
   - Unifiedkappa outputs are saved in each ShengBTE temperature directory (e.g. T300K) as they're based on anharmonic phonon scattering rates

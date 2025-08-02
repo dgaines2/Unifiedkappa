@@ -433,7 +433,8 @@ def read_minikappa_file(fpath, verbose=False):
 
 if __name__ == "__main__":
     """
-    Here's an example of using from_control to calculate unified_kappa
+    Here's an example of using from_control to initialize UnifiedkappaManager
+    Run this in ./shengbte_example
     """
     shengbte_dir = Path(".")
     poscar_filename = "POSCAR-prim"
@@ -441,22 +442,28 @@ if __name__ == "__main__":
         shengbte_dir=shengbte_dir,
         poscar_filename=poscar_filename,
     )
-    """
-    Here's an example of using from_data to calculate kL_min
-    """
-    # unifiedkappa_manager = UnifiedkappaManager.from_parameters(
-    #     poscar_path="POSCAR-prim",
-    #     supercell_matrix=np.eye(3) * 4,
-    #     primitive_matrix=np.eye(3),
-    #     force_constants_filename="FORCE_CONSTANTS_2ND",
-    #     kwargs={
-    #         "mesh": [25, 25, 25],
-    #     },
-    # )
-
-    unifiedkappa_results = unifiedkappa_manager.run_unified_kappa(shengbte_dir)
+    unifiedkappa_results = unifiedkappa_manager.run_unified_kappa()
     minikappa_results = unifiedkappa_manager.run_minikappa(
         temperatures=[300.0],
         tau_factors=[2.0],
         verbose=True,
     )
+
+    """
+    Here's an example of using from_parameters to initialize UnifiedkappaManager
+    - This is useful in the case where you only want to get minikappa from
+      harmonic phonon outputs
+    Run this in ./phonopy_example
+    """
+    # unifiedkappa_manager = UnifiedkappaManager.from_parameters(
+    #     poscar_path=poscar_filename,
+    #     supercell_matrix=np.eye(3) * 4,
+    #     primitive_matrix=np.eye(3),
+    #     force_constants_filename="FORCE_CONSTANTS",
+    #     kwargs={"mesh": [12, 12, 12]},
+    # )
+    # minikappa_results = unifiedkappa_manager.run_minikappa(
+    #     temperatures=[300.0, 600.0, 900],
+    #     tau_factors=[2.0],
+    #     verbose=True,
+    # )
