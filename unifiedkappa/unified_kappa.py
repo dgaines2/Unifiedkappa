@@ -100,23 +100,12 @@ class UnifiedkappaManager:
         Returns:
             Gamma (np.array(nqpt, nband]): scattering rate for each phonon mode
         """
-        nqpt, nband = freqs.shape
-        Gamma = np.ones((nqpt, nband)) * 1e10
-        for iq, i in itertools.product(range(nqpt), range(nband)):
-            omega = freqs[iq, i]
-            if omega > 0:
-                Gamma[iq, i] = omega / 2 / np.pi * tau_factor
+        return np.where(freqs > 0, freqs / (2 * np.pi) * tau_factor, 1e10)
         return Gamma
 
     @staticmethod
     def get_planckian_scattering_rates(freqs, temperature):
-        nqpt, nband = freqs.shape
-        Gamma = np.ones((nqpt, nband)) * 1e10
-        for iq, i in itertools.product(range(nqpt), range(nband)):
-            omega = freqs[iq, i]
-            if omega > 0:
-                Gamma[iq, i] = 0.13092 * temperature
-        return Gamma
+        return np.where(freqs > 0, 0.13092 * temperature, 1e10)
 
     def calculate_unified_kappa(
         self,
