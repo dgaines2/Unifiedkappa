@@ -24,6 +24,7 @@ for Phonopy version 2.17.1
 
 class LibraryModificationRequired(Exception):
     """Raised when the required library modifications have not been made."""
+
     pass
 
 
@@ -35,6 +36,7 @@ class UnifiedkappaManager:
         symprec=1e-03,
         shengbte_dir=None,
         n_histogram_bins=50,
+        batch_size=1000,
         save_histogram=False,
     ):
         """
@@ -48,6 +50,9 @@ class UnifiedkappaManager:
             shengbte_dir (str | Path): directory for ShengBTE outputs
             n_histogram_bins (int): if save_histogram is True, the number of
                 bins for diagonal and off diagonal components of unifiedkappa
+            batch_size (int | None): if not None, batch q-points into batches
+                of size batch_size for calculation. This can be useful for
+                conserving memory for very dense q-point meshes.
             save_histogram (bool): if True, write files of binned diagonal and
                 off diagonal components of unifiedkappa
         """
@@ -57,6 +62,7 @@ class UnifiedkappaManager:
         )
         self.symprec = symprec
         self.shengbte_dir = shengbte_dir
+        self.batch_size = batch_size
         self.n_histogram_bins = n_histogram_bins
         self.save_histogram = save_histogram
 
@@ -137,8 +143,10 @@ class UnifiedkappaManager:
         hbar = 1.054571726470000e-022
         kB = 1.380648813000000e-023
 
-        volpc = self.phonon.primitive.volume / 1000.0  # Angs^3 to nm^3
         nqpt, nband = freqs.shape
+        volpc = self.phonon.primitive.volume / 1000.0  # Angs^3 to nm^3
+        unit_factor = 1e21 * hbar**2 / (kB * temperature**2 * volpc * nqpt)
+        beta = hbar / (kB * temperature)
 
         delta_freq = np.max(freqs + 1e-01) / self.n_histogram_bins
         histogram_kappa_d = np.zeros(
@@ -148,41 +156,56 @@ class UnifiedkappaManager:
             (self.n_histogram_bins, self.n_histogram_bins, 3, 3)
         )
 
-        kappaband = np.zeros((nband, nband, 3, 3), dtype=np.complex128, order="C")
-        for iq, i, j, k, kp in itertools.product(
-            range(nqpt),
-            range(nband),
-            range(nband),
-            range(3),
-            range(3),
-        ):
-            omega1 = freqs[iq, i]
-            omega2 = freqs[iq, j]
-            if omega1 <= freqcf or omega2 <= freqcf:
-                continue
-            Gamma1 = Gamma[iq, i]
-            Gamma2 = Gamma[iq, j]
-            fBE1 = 1.0 / (np.exp(hbar * omega1 / kB / temperature) - 1.0)
-            fBE2 = 1.0 / (np.exp(hbar * omega2 / kB / temperature) - 1.0)
-            tmpv = (gvfull[iq, i, j, k] * gvfull[iq, j, i, kp]).real
-            kappaband_tmp = (omega1+omega2)/2 * \
-                (fBE1*(fBE1+1)*omega1+fBE2*(fBE2+1)*omega2) * tmpv \
-                / (4*(omega1-omega2)**2+(Gamma1+Gamma2)**2) \
-                * (Gamma1+Gamma2)
-            kappaband[i, j, k, kp] += kappaband_tmp
+        kappaband = np.zeros((nband, nband, 3, 3))
+        batch_size = min(nqpt, self.batch_size if self.batch_size else np.inf)
+        for start in range(0, nqpt, batch_size):
+            stop = min(start + batch_size, nqpt)
 
-            idx_freq1 = int(omega1 // delta_freq)
-            idx_freq2 = int(omega2 // delta_freq)
-            if i == j:
-                histogram_kappa_d[idx_freq1, idx_freq2, k, kp] += kappaband_tmp
-            else:
-                histogram_kappa_od[idx_freq1, idx_freq2, k, kp] += kappaband_tmp
+            omega_batch = freqs[start:stop]  # (B, nband)
+            Gamma_batch = Gamma[start:stop]  # (B, nband)
+            fBE = 1.0 / (np.exp(beta * omega_batch) - 1.0)  # (B, nband)
 
-        # conversion
-        unit_factor = 1e21 * hbar**2 / (kB * temperature**2 * volpc * nqpt)
-        kappaband *= unit_factor
-        histogram_kappa_d *= unit_factor
-        histogram_kappa_od *= unit_factor
+            mask = omega_batch > freqcf  # (B, nband)
+
+            # expand out necessary dimensions for vectorization (B, nband, nband)
+            omega1 = omega_batch[:, :, None]  # (B, nband, 1)
+            omega2 = omega_batch[:, None, :]  # (B, 1, nband)
+            Gamma1 = Gamma_batch[:, :, None]  # (B, nband, 1)
+            Gamma2 = Gamma_batch[:, None, :]  # (B, 1, nband)
+            fBE1 = fBE[:, :, None]  # (B, nband, 1)
+            fBE2 = fBE[:, None, :]  # (B, 1, nband)
+            valid = mask[:, :, None] & mask[:, None, :]  # (B, nband, nband)
+
+            num = (
+                (omega1 + omega2)
+                / 2
+                * (fBE1 * (fBE1 + 1) * omega1 + fBE2 * (fBE2 + 1) * omega2)
+            )
+            den = 4 * (omega1 - omega2) ** 2 + (Gamma1 + Gamma2) ** 2
+            prefactor = np.where(
+                valid, num / den * (Gamma1 + Gamma2), 0.0
+            )  # (B, nband, nband)
+            prefactor *= unit_factor
+
+            gv_batch = gvfull[start:stop]  # (B, nband, nband, 3)
+            # outer product of gv_ij with gv_ji (but keep the batches)
+            tmpv = np.einsum("bijk, bjip -> bijkp", gv_batch, gv_batch)
+            tmpv = tmpv.real  # (B, nband, nband, 3, 3)
+
+            # Einstein summation over batches -> (nband, nband, 3, 3)
+            kappaband += np.einsum("bij, bijkp -> ijkp", prefactor, tmpv)
+
+            # Gather scattering contributions for histogram
+            for b in range(omega1.shape[0]):
+                for i, j in itertools.product(range(nband), range(nband)):
+                    k_contrib = tmpv[b, i, j] * prefactor[b, i, j]  # -> (3,3)
+                    idx_i = int(omega1[b, i, 0] // delta_freq)
+                    idx_j = int(omega2[b, 0, j] // delta_freq)
+                    if i == j:
+                        histogram_kappa_d[idx_i, idx_j] += k_contrib
+                    else:
+                        histogram_kappa_od[idx_i, idx_j] += k_contrib
+
         if self.save_histogram:
             if filename_prefix is None:
                 filename_prefix = f"unifiedkappa-{int(temperature)}"
@@ -196,18 +219,11 @@ class UnifiedkappaManager:
                     histogram_kappa_od[:, :, index, index],
                 )
 
-        kappaD = np.zeros((3, 3), dtype=np.complex128, order="C")
-        kappaOD = np.zeros((3, 3), dtype=np.complex128, order="C")
-        kappaF = np.zeros((3, 3), dtype=np.complex128, order="C")
-        for i, j in itertools.product(range(nband), range(nband)):
-            kappaF += kappaband[i, j]
-            if i == j:
-                kappaD += kappaband[i, j]
-            else:
-                kappaOD += kappaband[i, j]
-        kappaD = kappaD.real
-        kappaOD = kappaOD.real
-        kappaF = kappaF.real
+        diag_mask = np.eye(nband, dtype=bool)
+        kappaD = kappaband[diag_mask].sum(axis=0)
+        kappaOD = kappaband[~diag_mask].sum(axis=0)
+        kappaF = kappaband.sum(axis=(0, 1))
+
         if self.symprec is not None:
             ph_symm = Symmetry(
                 self.phonon.primitive,
