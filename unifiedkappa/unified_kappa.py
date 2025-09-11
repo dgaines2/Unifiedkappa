@@ -373,7 +373,7 @@ class UnifiedkappaManager:
         supercell_matrix,
         primitive_matrix,
         force_constants_filename="FORCE_CONSTANTS",
-        kwargs=None,
+        **kwargs,
     ):
         """
         Construct UnifiedkappaManager from a set of parameters
@@ -384,12 +384,7 @@ class UnifiedkappaManager:
             primitive_matrix (3x3 array[float]): primitive matrix
             force_constants_filename (str | Path): path to harmonic force
                 constants file
-            kwargs (optional, dict): dictionary with mesh, n_histogram_bins, or
-                save_histogram
         """
-        if kwargs is None:
-            kwargs = {}
-
         phonon = phonopy.load(
             supercell_matrix=supercell_matrix,
             primitive_matrix=primitive_matrix,
@@ -405,7 +400,7 @@ class UnifiedkappaManager:
         shengbte_dir,
         poscar_filename="POSCAR",
         force_constants_filename="FORCE_CONSTANTS_2ND",
-        kwargs=None,
+        **kwargs,
     ):
         """
         Construct UnifiedkappaManager from a ShengBTE CONTROL file in
@@ -417,12 +412,7 @@ class UnifiedkappaManager:
             poscar_filename (str): path to POSCAR filename in shengbte_dir
             force_constants_filename (str): harmonic force constants filename
                 in shengbte_dir
-            kwargs (optional, dict): dictionary with mesh, n_histogram_bins, or
-                save_histogram
         """
-        if kwargs is None:
-            kwargs = {}
-
         shengbte_dir = Path(shengbte_dir)
         sbte = ShengBTEAnalyzer(shengbte_dir)
         poscar_path = str(shengbte_dir / poscar_filename)
@@ -435,8 +425,7 @@ class UnifiedkappaManager:
             force_constants_filename=force_constants_path,
             is_symmetry=False,
         )
-        kwargs.update({"mesh": sbte.ngrid, "shengbte_dir": shengbte_dir})
-        return cls(phonon, **kwargs)
+        return cls(phonon, mesh=sbte.ngrid, shengbte_dir=shengbte_dir, **kwargs)
 
 
 def read_minikappa_file(fpath, verbose=False):
@@ -481,7 +470,7 @@ if __name__ == "__main__":
     #     supercell_matrix=np.eye(3) * 4,
     #     primitive_matrix=np.eye(3),
     #     force_constants_filename="FORCE_CONSTANTS",
-    #     kwargs={"mesh": [12, 12, 12]},
+    #     mesh=[12, 12, 12],
     # )
     # minikappa_results = unifiedkappa_manager.run_minikappa(
     #     temperatures=[300.0, 600.0, 900],
