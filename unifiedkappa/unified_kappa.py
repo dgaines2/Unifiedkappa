@@ -323,8 +323,9 @@ class UnifiedkappaManager:
                 verbose,
             )
             Gamma = sbte.rates_rta_fbz[f"{temperature}"]
-            temperature_dir = Path(f"T{temperature}K")
-            filename_prefix = str(temperature_dir / "unifiedkappa")
+            filename_prefix = str(
+                self.shengbte_dir / f"T{temperature}K" / "unifiedkappa"
+            )
             kappaD, kappaOD, kappaF = self.calculate_unified_kappa(
                 freqs,
                 Gamma,
