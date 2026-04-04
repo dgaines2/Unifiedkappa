@@ -414,17 +414,25 @@ class ShengBTEAnalyzer:
     def _read_kappa(self):
         self._kappa = {}
         self._kappa_tensor = {}
+        self._kappa_rta = {}
+        self._kappa_rta_tensor = {}
         for temperature_dir in self.temperature_dirs:
             temperature = temperature_dir.name.strip("TK")
             kappa_tensor_path = temperature_dir / "BTE.kappa_tensor"
-            kappa_tensor_file = np.loadtxt(kappa_tensor_path)
+            kappa_tensor_file = np.atleast_2d(np.loadtxt(kappa_tensor_path))
+            # Last row = converged (iterative) kappa
             kappa_tensor = kappa_tensor_file[-1, 1:]
             kappa = self.get_kappa_as_scalar(kappa_tensor)
+            # First row (iteration 0) = RTA kappa
+            kappa_rta_tensor = kappa_tensor_file[0, 1:]
+            kappa_rta = self.get_kappa_as_scalar(kappa_rta_tensor)
             if self.kappa_precision is not None:
-                kappa = np.round(kappa, decimals=self.kappa_precision)
                 kappa_tensor = np.round(kappa_tensor, decimals=self.kappa_precision)
+                kappa_rta_tensor = np.round(kappa_rta_tensor, decimals=self.kappa_precision)
             self._kappa[temperature] = kappa
             self._kappa_tensor[temperature] = kappa_tensor
+            self._kappa_rta[temperature] = kappa_rta
+            self._kappa_rta_tensor[temperature] = kappa_rta_tensor
 
     @property
     def kappa(self):
@@ -433,6 +441,14 @@ class ShengBTEAnalyzer:
     @property
     def kappa_tensor(self):
         return self._kappa_tensor
+
+    @property
+    def kappa_rta(self):
+        return self._kappa_rta
+
+    @property
+    def kappa_rta_tensor(self):
+        return self._kappa_rta_tensor
 
     def _read_unified_kappa(self):
         unified_results = defaultdict(dict)
