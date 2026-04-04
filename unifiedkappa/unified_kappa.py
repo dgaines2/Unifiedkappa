@@ -320,9 +320,16 @@ class UnifiedkappaManager:
         freqs = mesh_dict["frequencies"] * 2 * np.pi  # THz -> 2*pi*THz
         gvfull = mesh_dict["group_velocities_full"] / 10.0  # Angs*THz -> nm*THz == km/s
 
+        # Inject ShengBTE's diagonal group velocities (BTE.v_full) into gvfull
+        sbte = ShengBTEAnalyzer(self.shengbte_dir, scattering_rate_cutoff=0.0)
+        v_sbte = sbte.group_velocity_fbz  # (nqpt, nband, 3) in nm/ps == km/s
+        nband = gvfull.shape[1]
+        for n in range(nband):
+            gvfull[:, n, n, :] = v_sbte[:, n, :]
+        vprint("  Injected ShengBTE BTE.v_full for diagonal group velocities", verbose)
+
         # kappa
         results = {}
-        sbte = ShengBTEAnalyzer(self.shengbte_dir, scattering_rate_cutoff=0.0)
         for temperature in sbte.temperatures:
             results[temperature] = {}
             vprint(
