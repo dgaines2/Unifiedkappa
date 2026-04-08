@@ -33,7 +33,6 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-import copy
 import warnings
 from typing import Optional, Union
 
@@ -240,40 +239,38 @@ class GroupVelocity:
             return gv
 
     def _calculate_group_velocity_at_q_xy(self, q):
-        '''
-        @yixia
-        added and modified method to compute off-diagonal group velocities
-        '''
+        """Compute off-diagonal group velocities at q."""
         self._dynmat.run(q)
         dm = self._dynmat.dynamical_matrix
         eigvals, eigvecs = np.linalg.eigh(dm)
         eigvals = eigvals.real
         freqs = np.sqrt(abs(eigvals)) * np.sign(eigvals) * self._factor
-        gv = np.zeros((len(freqs),3), dtype='double', order='C')
-        gv_full = np.zeros((len(freqs),len(freqs),3), dtype=np.complex128, order='C')
         deg_sets = degenerate_sets(freqs)
 
         ddms = self._get_dD(np.array(q))
-        eigvecs_new = copy.deepcopy(eigvecs)
+        eigvecs_new = eigvecs.copy()
         for deg in deg_sets:
+            if len(deg) < 2:
+                continue
             eigsets = eigvecs[:, deg]
-            _, eigvecs_tmp = np.linalg.eigh(np.dot(eigsets.T.conj(), np.dot(ddms[0], eigsets)))
-            rot_eigsets = np.dot(eigsets, eigvecs_tmp)
-            eigvecs_new[:, deg] = rot_eigsets
+            _, eigvecs_tmp = np.linalg.eigh(
+                eigsets.T.conj() @ ddms[0] @ eigsets
+            )
+            eigvecs_new[:, deg] = eigsets @ eigvecs_tmp
 
-        ddms3 = ddms[1:4]
-        for k in range(3):
-            gv_full[:,:,k] = eigvecs_new.conj().T @ ddms3[k] @ eigvecs_new
-        mask = (freqs > self._cutoff_frequency)[:, None] & (freqs > self._cutoff_frequency)[None, :]
+        # Compute E† @ dD_k @ E for all 3 Cartesian directions at once
+        # ddms[1:4] shape (3, N, N); batched matmul via @ broadcasts (N,N)
+        tmp = ddms[1:4] @ eigvecs_new            # (3, N, N)
+        gv_full = (eigvecs_new.conj().T @ tmp).transpose(1, 2, 0)  # (N, N, 3)
+
+        mask = (freqs > self._cutoff_frequency)[:, None] & (
+            freqs > self._cutoff_frequency
+        )[None, :]
         factor_denom = freqs[:, None] + freqs[None, :]
-        factor = np.where(
-            mask,
-            self._factor ** 2 / factor_denom,
-            0.0,
-        )
+        factor = np.where(mask, self._factor**2 / factor_denom, 0.0)
         gv_full *= factor[..., None]
 
-        gv = np.real(np.diagonal(gv_full, axis1=0, axis2=1))
+        gv = np.real(np.diagonal(gv_full, axis1=0, axis2=1)).T
 
         return gv, gv_full
 
